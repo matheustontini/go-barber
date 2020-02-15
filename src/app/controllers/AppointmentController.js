@@ -1,9 +1,10 @@
 import * as Yup from 'yup';
-import { startOfHour, parseISO, isBefore, format } from 'date-fns';
+import { startOfHour, parseISO, isBefore, format, subHours } from 'date-fns';
 import User from '../models/User';
 import File from '../models/File';
 import Appointment from '../models/Appointment';
 import Notification from '../schemas/Notification';
+import Mail from '../../lib/Mail';
 
 class AppointmentController {
   async index(req, res) {
@@ -59,6 +60,12 @@ class AppointmentController {
       });
     }
 
+    if (req.userId === provider_id) {
+      return res.status(401).json({
+        error: 'You can not create an appointment to yourself'
+      });
+    }
+
     /**
      * Check for past dates
      */
@@ -97,8 +104,46 @@ class AppointmentController {
     const user = await User.findByPk(req.userId);
     const formattedDate = format(hourStart, "dd MMM', at 'H:mm");
     await Notification.create({
-      content: `New appointment from ${user.name} ${formattedDate}`,
+      content: `New appointment from ${user.name} on ${formattedDate}`,
       user: provider_id
+    });
+
+    return res.json(appointment);
+  }
+
+  async delete(req, res) {
+    const appointment = await Appointment.findByPk(req.params.id, {
+      include: [
+        {
+          model: User,
+          as: 'provider',
+          attributes: ['name', 'email']
+        }
+      ]
+    });
+
+    if (appointment.user_id !== req.userId) {
+      return res.status(401).json({
+        error: 'You do not have permission to cancel this appointment'
+      });
+    }
+
+    const dateWithSub = subHours(appointment.date, 2);
+
+    if (isBefore(dateWithSub, new Date())) {
+      return res.status(401).json({
+        error: 'You can only cancel appointments 2 hours in advance'
+      });
+    }
+
+    appointment.cancelled_at = new Date();
+
+    await appointment.save();
+
+    await Mail.sendMail({
+      to: `${appointment.provider.name} <${appointment.provider.email}>`,
+      subject: 'Appointment cancelled',
+      text: 'Your appointment has been cancelled'
     });
 
     return res.json(appointment);
